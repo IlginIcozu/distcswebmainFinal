@@ -42,7 +42,7 @@ function setup() {
         document.getElementById('overlay').style.backgroundColor = "rgba(11, 11, 11, 1.0)";
         canvas.style('display', 'none');
         // Stop p5 draw() so no circle/particles are rendered
-        noLoop();
+        //noLoop();
         // Early return so we never run audio setup
         return;
     }
