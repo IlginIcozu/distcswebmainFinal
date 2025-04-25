@@ -1,25 +1,20 @@
-// sketch.js
-
-let basicShader;
-let basicShader2;
+let basicShader, basicShader2;
 let shaderTexture, shaderTexture2;
-let alp1 = 255,
-    alp2 = 255;
-let maxAlp = 80,
-    minAlp = 30;
-
-let fmSynth, filter, filter2, lfo, lfoResonance; // Tone.js components
-let fmSynthPlaying = false;
-let noiseSynth;
-let autoFilter;
-
 let textGraphics;
-
-let state = "main"; // "main" or "overlay"
-
 let overlayParticlesGraphics;
 let particles = [];
 
+let fmSynth, filter, filter2, lfo, lfoResonance, noiseSynth, autoFilter;
+let fmSynthPlaying = false;
+let audioInitialized = false;
+
+let state = 'overlay'; // start on overlay
+let mainCanvas;
+
+const maxAlp = 80,
+    minAlp = 30;
+
+// ----------------------------------------
 function isMobile() {
     return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i
         .test(navigator.userAgent);
@@ -31,155 +26,109 @@ function preload() {
 }
 
 function setup() {
-    let canvas = createCanvas(windowWidth, windowHeight, WEBGL);
-    canvas.parent('p5-container'); // Attach canvas to the container
+    pixelDensity(1);
+    mainCanvas = createCanvas(windowWidth, windowHeight, WEBGL);
+    mainCanvas.parent('p5-container');
+    noCursor();
 
-    
-    // If mobile => skip the interactive/audio part
-    if (isMobile()) {
-        state = "overlay";
-        document.getElementById('overlay').style.display = 'block';
-        document.getElementById('overlay').style.backgroundColor = "rgba(11, 11, 11, 1.0)";
-        canvas.style('display', 'none');
-        // Stop p5 draw() so no circle/particles are rendered
-        //noLoop();
-        // Early return so we never run audio setup
-        return;
-    }
-    
-    // Random seed
-    let seed = random() * 999999;
-    randomSeed(seed);
-    noiseSeed(seed);
-
+    // ——— OFFSCREEN BUFFERS ———
     shaderTexture = createGraphics(windowWidth, windowHeight, WEBGL);
     shaderTexture.noStroke();
     shaderTexture.pixelDensity(1);
-
     shaderTexture2 = createGraphics(windowWidth, windowHeight, WEBGL);
     shaderTexture2.noStroke();
     shaderTexture2.pixelDensity(1);
-
     textGraphics = createGraphics(windowWidth, windowHeight);
     textGraphics.pixelDensity(1);
 
-    // Initialize the overlay particles buffer
+    // ——— OVERLAY PARTICLES CANVAS ———
     overlayParticlesGraphics = createGraphics(windowWidth, windowHeight);
     overlayParticlesGraphics.pixelDensity(1);
     overlayParticlesGraphics.clear();
-
-    // If WebGL context is lost
-    canvas.elt.addEventListener('webglcontextlost', (e) => {
-        e.preventDefault();
-        noLoop();
-        console.log('WebGL context lost!');
-    }, false);
-    canvas.elt.addEventListener('webglcontextrestored', (e) => {
-        console.log('WebGL context restored!');
-        loop();
-    }, false);
-
-    // Position the overlay particles canvas
-    let overlayCanvas = overlayParticlesGraphics.canvas;
-    overlayCanvas.style.position = 'absolute';
-    overlayCanvas.style.top = '0';
-    overlayCanvas.style.left = '0';
-    overlayCanvas.style.zIndex = '11';
-    overlayCanvas.style.pointerEvents = 'none';
-    document.body.appendChild(overlayCanvas);
-
-    pixelDensity(1);
-    noCursor();
-
-
-
-
-    // Initialize Tone
-    setupToneJS();
-
-    // --- MOBILE-FRIENDLY: Tab Visibility (pause audio) ---
-    document.addEventListener("visibilitychange", () => {
-        if (document.hidden) {
-            // Page hidden
-            if (Tone.Transport.state === 'started') {
-                Tone.Transport.pause();
-            }
-            if (fmSynthPlaying) {
-                fmSynth.triggerRelease();
-                fmSynthPlaying = false;
-            }
-            if (noiseSynth && noiseSynth.state === "started") {
-                noiseSynth.stop();
-            }
-        } else {
-            // Page visible again
-            if (state === "main") {
-                if (Tone.Transport.state !== 'started') {
-                    Tone.Transport.start();
-                }
-                // Optionally re-trigger fmSynth
-                if (!fmSynthPlaying) {
-                    fmSynth.triggerAttack("D2");
-                    fmSynthPlaying = true;
-                }
-                if (noiseSynth && noiseSynth.state !== "started") {
-                    noiseSynth.start();
-                }
-            }
-        }
+    let ovCan = overlayParticlesGraphics.canvas;
+    Object.assign(ovCan.style, {
+        position: 'absolute',
+        top: '0',
+        left: '0',
+        zIndex: '11',
+        pointerEvents: 'none',
+        display: 'none'
     });
+    document.body.appendChild(ovCan);
 
-    // Back button
-    document.getElementById('back-button').addEventListener('click', () => {
-        state = "main";
-        document.getElementById('overlay').style.display = 'none';
-        overlayParticlesGraphics.canvas.style.display = 'none';
+    // ——— INITIAL OVERLAY STATE ———
+    if (state === 'overlay') {
+        const ov = document.getElementById('overlay');
+        ov.style.display = 'block';
+        ov.style.backgroundColor = 'rgba(11,11,11,1.0)';
+        overlayParticlesGraphics.canvas.style.display = 'block';
+        mainCanvas.elt.style.display = 'none';
+    }
 
-        // Resume
-        if (Tone.Transport.state !== 'started') {
-            Tone.Transport.start();
+    // ——— MOBILE: always overlay & stop drawing ———
+    if (isMobile()) {
+        state = 'overlay';
+        noLoop();
+        return;
+    }
+
+    // ——— BACK/ENTER BUTTON ———
+    document.getElementById('back-button').addEventListener('click', async () => {
+        // 1) Unlock audio
+        await Tone.start();
+
+        // 2) Init Tone.js *once*
+        if (!audioInitialized) {
+            setupToneJS();
+            audioInitialized = true;
         }
+
+        // 3) Start the transport & synths
+        Tone.Transport.start();
         if (!fmSynthPlaying) {
-            let note = "D2";
-            fmSynth.triggerAttack(note);
+            fmSynth.triggerAttack('D2');
             fmSynthPlaying = true;
         }
-        if (!noiseSynth.started) {
+        if (noiseSynth && noiseSynth.state !== 'started') {
             noiseSynth.start();
         }
+
+        // 4) Switch to main visuals
+        state = 'main';
+        document.getElementById('overlay').style.display = 'none';
+        overlayParticlesGraphics.canvas.style.display = 'none';
+        mainCanvas.elt.style.display = 'block';
+        loop();
     });
 }
 
 function draw() {
     background(0);
 
-    if (state === "main") {
-        // main state
-        let mx = mouseX - width / 2;
-        let my = mouseY - height / 2;
+    if (state === 'main') {
+        // — MAIN STATE — //
+
+        let mx = mouseX - width / 2,
+            my = mouseY - height / 2;
         let d = dist(mx, my, 0, 0);
 
-        // Show pointer if inside center circle
-        if (d <= 50) {
-            cursor('pointer');
-        } else {
-            noCursor();
-        }
+        if (d <= 50) cursor('pointer');
+        else noCursor();
 
-        // Update uniforms
+        // update & draw shaders
         basicShader.setUniform('u_pixelDensity', pixelDensity());
-        basicShader.setUniform("uTexture0", shaderTexture);
+        basicShader.setUniform('uTexture0', shaderTexture);
         basicShader.setUniform('u_resolution', [width, height]);
-        basicShader.setUniform('u_time', millis() / 1000.0);
+        basicShader.setUniform('u_time', millis() / 1000);
         basicShader.setUniform('u_speed', 1.0);
         basicShader.setUniform('u_windSpeed', 1.0);
         basicShader.setUniform('u_mouse', [mouseX, height - mouseY]);
         basicShader.setUniform('u_middle', [width, height]);
 
         basicShader2.setUniform('u_pixelDensity', pixelDensity());
-        basicShader2.setUniform("uTexture0", shaderTexture);
+        basicShader2.setUniform('uTexture0', shaderTexture);
         basicShader2.setUniform('u_resolution', [width, height]);
-        basicShader2.setUniform('u_time', millis() / 1000.0);
+        basicShader2.setUniform('u_time', millis() / 1000);
         basicShader2.setUniform('u_speed', 1.0);
         basicShader2.setUniform('u_windSpeed', 1.0);
         basicShader2.setUniform('u_mouse', [mouseX, height - mouseY]);
@@ -187,13 +136,14 @@ function draw() {
 
         shaderTexture.shader(basicShader);
         shaderTexture.rect(0, 0, width, height);
-
         shaderTexture2.shader(basicShader2);
         shaderTexture2.rect(0, 0, width, height);
 
         translate(-width / 2, -height / 2);
 
-        // dist for alpha
+        // alpha blend
+        let alp1 = 255,
+            alp2 = 0;
         let d2 = dist(mx, my, 0, 0);
         if (d2 > maxAlp) {
             alp1 = 255;
@@ -208,38 +158,33 @@ function draw() {
 
         tint(255, alp1);
         image(shaderTexture, 0, 0);
-
         tint(255, alp2);
         image(shaderTexture2, 0, 0);
 
-        let textOpacity;
-        if (d <= 50) {
-            textOpacity = map(d, 50, 0, 0, 255);
-        } else {
-            textOpacity = 0;
-        }
-
+        // “Enter” text fade
+        let txtOp = (d <= 50) ? map(d, 50, 0, 0, 255) : 0;
         textGraphics.clear();
-        textGraphics.fill(255, textOpacity);
+        textGraphics.fill(255, txtOp);
         textGraphics.textFont('monospace');
         textGraphics.textAlign(CENTER, CENTER);
         textGraphics.textSize(15);
-
-        // textGraphics.text('Enter', textGraphics.width / 2, textGraphics.height / 2);
+        // textGraphics.text('Enter', textGraphics.width/2, textGraphics.height/2);
         image(textGraphics, 0, 0);
 
-        // Hide overlay particles
+        // hide overlay particles
         overlayParticlesGraphics.canvas.style.display = 'none';
 
-        // Update audio
+        // audio params follow cursor
         updateLFOResonance();
 
-    } else if (state === "overlay") {
-        // overlay
+    } else {
+        // — OVERLAY STATE — //
         overlayParticlesGraphics.canvas.style.display = 'block';
         updateOverlayGraphics();
     }
 }
+
+
 
 // --- EVENT: Window Resized ---
 function windowResized() {
@@ -273,8 +218,7 @@ function updateOverlayGraphics() {
     overlayParticlesGraphics.clear();
 
     if (isMobile()) {
-        updateParticles();
-        drawBlurredCircle();
+
     } else {
         updateParticles();
         drawBlurredCircle();
