@@ -273,7 +273,8 @@ function updateOverlayGraphics() {
     overlayParticlesGraphics.clear();
 
     if (isMobile()) {
-
+        updateParticles();
+        drawBlurredCircle();
     } else {
         updateParticles();
         drawBlurredCircle();
